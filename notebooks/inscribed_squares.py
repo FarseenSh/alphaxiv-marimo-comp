@@ -329,36 +329,44 @@ def _(mo):
 
 
 @app.cell
-def _(curve_picker, gallery, mo):
+def _(curve_picker, gallery):
     has_traj = f"{curve_picker.value}/trajectory" in gallery
-    if has_traj:
-        traj = gallery[f"{curve_picker.value}/trajectory"]
-        step_slider = mo.ui.slider(
-            start=0, stop=traj.shape[0] - 1, value=traj.shape[0] - 1,
-            step=1, label="trajectory step",
-        )
-    else:
-        traj = None
-        step_slider = mo.md("*(trajectory only cached for the hero butterfly — switch to it to use this slider)*")
-    step_slider
-    return has_traj, step_slider, traj
+    traj = gallery[f"{curve_picker.value}/trajectory"] if has_traj else None
+    traj_steps = (
+        gallery[f"{curve_picker.value}/trajectory_steps"] if has_traj else None
+    )
+    return has_traj, traj, traj_steps
 
 
 @app.cell
-def _(curve_xy, has_traj, make_axes, plot_curve, plt, step_slider, traj):
+def _(
+    curve_xy,
+    has_traj,
+    make_axes,
+    mo,
+    np,
+    plot_curve,
+    plt,
+    traj,
+    traj_steps,
+):
     if has_traj:
-        _s = int(step_slider.value)
-        _frame = traj[_s, 0]
-        if _frame.ndim == 3:
-            _frame = _frame[0]
-        _fig, _ax = plt.subplots(figsize=(5.4, 5.4))
-        _ax.imshow(_frame, cmap="RdBu_r", vmin=-1, vmax=1)
-        plot_curve(_ax, curve_xy, color="black", lw=1.0, alpha=0.45)
-        make_axes(_ax, title=f"$\\hat x_0$ at step {_s} of {traj.shape[0]-1}  (red = square, blue = background)")
+        _fig, _axes = plt.subplots(2, 5, figsize=(15, 6.4))
+        for _i, _ax in enumerate(_axes.flat):
+            _frame = traj[_i, 0]
+            if _frame.ndim == 3:
+                _frame = _frame[0]
+            # Binary mask: black where the model thinks "square pixel"
+            _bin = (_frame < 0).astype(np.float32)
+            _ax.imshow(_bin, cmap="binary", vmin=0, vmax=1, alpha=0.85)
+            plot_curve(_ax, curve_xy, color="black", lw=1.0, alpha=0.55)
+            make_axes(_ax, title=f"after step {int(traj_steps[_i]) + 1}/100")
         plt.tight_layout()
         _out = _fig
     else:
-        _out = None
+        _out = mo.md(
+            "*(trajectory only cached for the hero butterfly — switch curves above)*"
+        )
     _out
     return
 
@@ -522,14 +530,12 @@ def _(np, plt, samples):
 
 @app.cell(hide_code=True)
 def _(mo, scores):
-    mo.md(
-        f"""
-        Mean squareness across seeds: **{float(scores.mean()):.3f}**, n={len(scores)}.
-        Outliers near 0 are typically failed samples — the model occasionally
-        produces a degenerate blob instead of a square. Failure rates of
-        ~5–15% match the paper's reported numbers on the curves task.
-        """
-    )
+    mo.md(f"""
+    Mean squareness across seeds: **{float(scores.mean()):.3f}**, n={len(scores)}.
+    Outliers near 0 are typically failed samples — the model occasionally
+    produces a degenerate blob instead of a square. Failure rates of
+    ~5–15% match the paper's reported numbers on the curves task.
+    """)
     return
 
 

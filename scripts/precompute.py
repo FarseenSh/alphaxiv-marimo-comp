@@ -158,14 +158,16 @@ def sample_squares(
     x_t = torch.randn((n_samples, 1, H, W), generator=g, device=device)
 
     timesteps = list(range(scheduler.diffusion_steps - 1, 0, -1))
+    # Log-spaced indices: dense at the start where the action is, sparse later.
+    save_at = {0, 1, 2, 3, 5, 8, 14, 25, 50, 90}
     trajectory = [] if return_trajectory else None
     for step_idx, t in enumerate(timesteps):
         t_tensor = torch.full((n_samples,), t, device=device, dtype=torch.long)
         noise_pred = model(x_t, t_tensor.unsqueeze(1), cond)
         prev_t = timesteps[step_idx + 1] if step_idx + 1 < len(timesteps) else 0
         x_t, x0_pred, _, _ = scheduler.denoise_ddim(x_t, t, noise_pred, prev_timestep=prev_t)
-        if return_trajectory and step_idx % 10 == 0:
-            trajectory.append(x0_pred.detach().cpu().numpy())
+        if return_trajectory and step_idx in save_at:
+            trajectory.append((step_idx, x0_pred.detach().cpu().numpy()))
 
     out = x_t.detach().cpu().numpy().squeeze(1)  # (N, H, W)
     return out, trajectory
@@ -219,7 +221,10 @@ def main() -> None:
         print(f"  done in {elapsed:.1f}s ({elapsed / n_samples:.2f}s/sample)")
         bundle[f"{name}/samples"] = squares.astype(np.float32)
         if trajectory is not None:
-            bundle[f"{name}/trajectory"] = np.stack(trajectory, axis=0).astype(np.float32)
+            steps = np.array([s for s, _ in trajectory], dtype=np.int32)
+            frames = np.stack([f for _, f in trajectory], axis=0).astype(np.float32)
+            bundle[f"{name}/trajectory"] = frames
+            bundle[f"{name}/trajectory_steps"] = steps
 
     print(f"\nSaving → {out_path}")
     np.savez_compressed(out_path, **bundle)
