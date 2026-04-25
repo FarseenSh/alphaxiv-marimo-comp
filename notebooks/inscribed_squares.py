@@ -587,25 +587,21 @@ def _(gallery, make_axes, np, plot_curve, plt):
         ["hero_butterfly", "circle", "peanut", "spiky_gear", "paper_figure_1"]
         if f"{n}/curve_img" in gallery
     ]
-    _rows = (len(_names) + 1) // 2
 
-    _fig, _axes = plt.subplots(_rows, 2, figsize=(11, 5.2 * _rows))
-    _axes = np.atleast_2d(_axes)
+    _fig, _axes = plt.subplots(1, len(_names), figsize=(3.0 * len(_names), 3.4))
+    if len(_names) == 1:
+        _axes = [_axes]
 
-    for _k, _name in enumerate(_names):
-        _r, _c = divmod(_k, 2)
-        _ax = _axes[_r, _c]
+    for _ax, _name in zip(_axes, _names):
         _smp = gallery[f"{_name}/samples"]
         _cxy = gallery[f"{_name}/curve_xy"]
         _heat = (_smp < 0).astype(np.float32).mean(axis=0)
         _ax.imshow(np.where(_heat > 0.05, _heat, np.nan),
                    cmap="plasma", vmin=0, vmax=1, alpha=0.92)
         plot_curve(_ax, _cxy, color="black", lw=1.4, alpha=0.85)
-        make_axes(_ax, title=f"{_name}  (n={_smp.shape[0]} seeds)")
+        _ax.set_box_aspect(1.0)
+        make_axes(_ax, title=f"{_name}\n(n={_smp.shape[0]} seeds)")
 
-    for _k in range(len(_names), _rows * 2):
-        _r, _c = divmod(_k, 2)
-        _axes[_r, _c].axis("off")
     plt.tight_layout()
     _fig
     return
