@@ -90,19 +90,39 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    <div style="text-align:center; padding: 24px 0 8px 0;">
+    <div style="text-align:center; padding: 24px 0 0 0;">
     <h1 style="margin-bottom: 4px; font-size: 2.4rem;">Inscribed Squares from Noise</h1>
     <p style="font-size: 1.05rem; opacity: 0.85; margin-top: 0;">
     A diffusion model doesn't generate cats here.<br>
     It solves a 100-year-old open problem in geometry — by drawing.
     </p>
-    <img src="https://raw.githubusercontent.com/FarseenSh/alphaxiv-marimo-comp/main/assets/hero_8_squares.png"
-         style="width: min(900px, 100%); border-radius: 12px; margin-top: 12px;
-                box-shadow: 0 8px 24px rgba(0,0,0,0.10);" />
-    <p style="font-size: 0.85rem; opacity: 0.6; margin-top: 8px;">
+    </div>
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(gallery, make_axes, plot_curve, plot_square_outline, plt):
+    _xy = gallery["hero_butterfly/curve_xy"]
+    _samples = gallery["hero_butterfly/samples"][:8]
+    _palette = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd",
+                "#ff7f0e", "#17becf", "#e377c2", "#bcbd22"]
+    _fig, _axes = plt.subplots(2, 4, figsize=(13, 6.5))
+    for _ax, _i, _c in zip(_axes.flat, range(8), _palette):
+        plot_curve(_ax, _xy, lw=1.3)
+        plot_square_outline(_ax, _samples[_i], color=_c, fill_alpha=0.22, lw=2.0)
+        make_axes(_ax, title=f"seed {_i}")
+    plt.tight_layout()
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    <p style="text-align:center; font-size: 0.9rem; opacity: 0.65; margin: -8px 0 16px 0;">
     The same Jordan curve, eight random seeds, eight different inscribed squares.
     </p>
-    </div>
     """)
     return
 
