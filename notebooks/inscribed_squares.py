@@ -25,6 +25,7 @@ app = marimo.App(width="full")
 def _():
     import io
     import urllib.request
+    from importlib.util import find_spec
     from pathlib import Path
 
     import marimo as mo
@@ -34,13 +35,24 @@ def _():
     from skimage.measure import find_contours
 
     GH_RAW = "https://raw.githubusercontent.com/FarseenSh/alphaxiv-marimo-comp/main/data/gallery.npz"
-    LOCAL_PATH = Path(__file__).resolve().parents[1] / "data" / "gallery.npz"
 
-    if LOCAL_PATH.exists():
-        gallery = dict(np.load(LOCAL_PATH))
-    else:
+    def _fetch_remote():
         with urllib.request.urlopen(GH_RAW) as _r:
-            gallery = dict(np.load(io.BytesIO(_r.read())))
+            return dict(np.load(io.BytesIO(_r.read())))
+
+    # In Pyodide/WASM, __file__ may resolve into a virtual filesystem where the
+    # path "exists" but the bytes are stale/empty — always fetch remotely there.
+    if find_spec("js") is not None:
+        gallery = _fetch_remote()
+    else:
+        _local = Path(__file__).resolve().parents[1] / "data" / "gallery.npz"
+        if _local.exists() and _local.stat().st_size > 0:
+            try:
+                gallery = dict(np.load(_local))
+            except Exception:
+                gallery = _fetch_remote()
+        else:
+            gallery = _fetch_remote()
 
     IMAGE_SIZE = 128
 
