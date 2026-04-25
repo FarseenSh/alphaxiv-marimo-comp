@@ -5,6 +5,7 @@
 #     "numpy",
 #     "matplotlib",
 #     "scipy",
+#     "scikit-image",
 #     "pillow",
 # ]
 # ///
@@ -29,6 +30,8 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
     import numpy as np
+    from scipy.interpolate import splev, splprep
+    from skimage.measure import find_contours
 
     GH_RAW = "https://raw.githubusercontent.com/FarseenSh/alphaxiv-marimo-comp/main/data/gallery.npz"
     LOCAL_PATH = Path(__file__).resolve().parents[1] / "data" / "gallery.npz"
@@ -38,7 +41,50 @@ def _():
     else:
         with urllib.request.urlopen(GH_RAW) as _r:
             gallery = dict(np.load(io.BytesIO(_r.read())))
-    return gallery, mo, np, plt
+
+    IMAGE_SIZE = 128
+
+    def to_pixel(xy, size=IMAGE_SIZE):
+        return xy * (size // 2) + size // 2
+
+    def square_polygon(sample, level=0.0):
+        contours = find_contours(sample, level=level)
+        if not contours:
+            return None
+        return max(contours, key=len)
+
+    def make_axes(ax, size=IMAGE_SIZE, title=None):
+        ax.set_xlim(0, size); ax.set_ylim(size, 0)
+        ax.set_aspect("equal"); ax.axis("off")
+        if title:
+            ax.set_title(title, fontsize=11)
+        return ax
+
+    def plot_curve(ax, curve_xy, color="black", lw=1.4, alpha=1.0):
+        px = to_pixel(curve_xy)
+        px = np.vstack([px, px[:1]])
+        ax.plot(px[:, 0], px[:, 1], color=color, lw=lw, alpha=alpha)
+
+    def plot_square_outline(ax, sample, color="crimson", lw=2.4, alpha=0.9, fill_alpha=0.18):
+        poly = square_polygon(sample)
+        if poly is None:
+            return
+        ax.fill(poly[:, 1], poly[:, 0], color=color, alpha=fill_alpha)
+        ax.plot(poly[:, 1], poly[:, 0], color=color, lw=lw, alpha=alpha)
+
+    return (
+        IMAGE_SIZE,
+        gallery,
+        make_axes,
+        mo,
+        np,
+        plot_curve,
+        plot_square_outline,
+        plt,
+        splev,
+        splprep,
+        to_pixel,
+    )
 
 
 @app.cell(hide_code=True)
@@ -79,7 +125,7 @@ def _(mo):
 
     It works. And because diffusion is multimodal, the same curve produces
     a *different* inscribed square at every seed — uncovering a hidden family
-    of solutions the paper itself doesn't fully explore.
+    of solutions the paper itself does not explore.
 
     That's where this notebook spends most of its time.
     """)
@@ -91,24 +137,22 @@ def _(mo):
     mo.md(r"""
     ## Pipeline — at a glance
 
-    | Stage | What goes in | What comes out |
+    | Stage | Input | Output |
     |---|---|---|
     | **Condition** | A Jordan curve, rasterized to 128×128 binary | 1-channel image (the "problem statement") |
     | **Noise**     | Random Gaussian (1×128×128) | The starting point of denoising |
     | **U-Net**     | `[noise, condition]` concatenated as 2 channels | Predicted noise per pixel |
     | **DDIM**      | 100 denoising steps | A clean 1-channel image of an inscribed square |
-    | **Snap**      | Discrete corners on the curve | A geometrically-valid 4-vertex square |
 
     The U-Net is a vanilla 4-level diffusion U-Net (~20M params, attention at
-    bottleneck and the inner enc/dec levels). The training data is purely
-    synthetic: 100,000 procedurally generated Jordan curves, each
-    constructed to pass exactly through a known random square.
+    the bottleneck and the inner enc/dec levels). Training data is purely
+    synthetic: 100,000 procedurally generated Jordan curves, each constructed
+    to pass exactly through a known random square.
 
-    Everything below is **pre-computed** — the diffusion sampling itself
-    ran offline on CPU (~5s per sample, 100 DDIM steps). The notebook is a
-    viewer over those samples. *Why?* Because PyTorch doesn't run in
-    WASM/Pyodide. Look at `scripts/precompute.py` in the repo to re-run
-    sampling yourself.
+    Diffusion sampling itself runs offline (~5s per sample on CPU). The
+    notebook reads the cached samples from a 10 MB `.npz`. *Why?* PyTorch
+    is not in Pyodide, but everything else here is. To reproduce the
+    sampling, see `scripts/precompute.py` in the repo.
     """)
     return
 
@@ -116,11 +160,105 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Pick a curve
+    ## Design your own curve
 
-    We walk through the pipeline on one running example, then apply it to
-    the rest of the gallery at the end. Try switching curves now to see how
-    the model behaves on different inputs.
+    Before we walk through the cached gallery, here's the curve generator
+    the model was trained on, running live in your browser. The math:
+
+    $$
+    r(\theta) = 1 + \sum_{h=1}^{H} \rho_h \sin(h\theta + \phi_h),\qquad
+    \rho_h \sim \mathcal U(0, 1)\cdot \alpha\cdot 10^{-(0.5 + 2(h-1)/(H-1))}
+    $$
+
+    Move the sliders. Inference can't run in-browser (PyTorch is not in
+    Pyodide), but you can preview *exactly the input* the diffusion
+    model would receive. Fork the repo to run sampling on it.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    H_slider = mo.ui.slider(start=1, stop=30, value=12, step=1, label="harmonics H")
+    rho_slider = mo.ui.slider(start=0.0, stop=2.0, value=1.2, step=0.05, label="amplitude scale α")
+    radius_slider = mo.ui.slider(start=0.30, stop=0.75, value=0.55, step=0.01, label="target radius")
+    seed_slider = mo.ui.slider(start=0, stop=99, value=7, step=1, label="seed")
+    mo.hstack([H_slider, rho_slider, radius_slider, seed_slider], gap=2)
+    return H_slider, radius_slider, rho_slider, seed_slider
+
+
+@app.cell
+def _(
+    H_slider,
+    IMAGE_SIZE,
+    np,
+    plt,
+    radius_slider,
+    rho_slider,
+    seed_slider,
+    splev,
+    splprep,
+    to_pixel,
+):
+    def _generate_curve(H, rho_scale, target_radius, seed, num_points=600):
+        rng = np.random.default_rng(int(seed))
+        t = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+        rho = rng.random(H) * np.logspace(-0.5, -2.5, max(H, 1)) * rho_scale
+        phi = rng.random(H) * 2 * np.pi
+        r = np.ones_like(t)
+        for h in range(1, H + 1):
+            r += rho[h - 1] * np.sin(h * t + phi[h - 1])
+        r *= target_radius
+        x, y = r * np.cos(t), r * np.sin(t)
+        try:
+            tck, _ = splprep([x, y], s=0, per=True)
+            u = np.linspace(0, 1, num_points)
+            x, y = splev(u, tck)
+        except Exception:
+            pass
+        return np.stack([x, y], axis=1)
+
+    _curve = _generate_curve(
+        H_slider.value, rho_slider.value, radius_slider.value, seed_slider.value
+    )
+
+    _fig, (_a1, _a2) = plt.subplots(1, 2, figsize=(10, 5))
+
+    _px = to_pixel(_curve, IMAGE_SIZE)
+    _px = np.vstack([_px, _px[:1]])
+    _a1.fill(_px[:, 0], _px[:, 1], color="#e8eef9", alpha=1.0)
+    _a1.plot(_px[:, 0], _px[:, 1], color="black", lw=1.6)
+    _a1.set_xlim(0, IMAGE_SIZE); _a1.set_ylim(IMAGE_SIZE, 0)
+    _a1.set_aspect("equal"); _a1.set_title(f"r(θ) with H={H_slider.value}, α={rho_slider.value:.2f}")
+    _a1.grid(alpha=0.15); _a1.set_xticks([]); _a1.set_yticks([])
+    for _spine in _a1.spines.values(): _spine.set_visible(False)
+
+    _img = np.full((IMAGE_SIZE, IMAGE_SIZE), 255, dtype=np.uint8)
+    _pts = _px.astype(np.int32)
+    for _i in range(len(_pts) - 1):
+        _x0, _y0 = _pts[_i]; _x1, _y1 = _pts[_i + 1]
+        _n = max(abs(_x1 - _x0), abs(_y1 - _y0)) + 1
+        _xs = np.linspace(_x0, _x1, _n).astype(int).clip(0, IMAGE_SIZE - 1)
+        _ys = np.linspace(_y0, _y1, _n).astype(int).clip(0, IMAGE_SIZE - 1)
+        _img[_ys, _xs] = 0
+    _a2.imshow(_img, cmap="gray", vmin=0, vmax=255)
+    _a2.set_title("rasterized → model input (128×128 binary)")
+    _a2.set_xticks([]); _a2.set_yticks([])
+    for _spine in _a2.spines.values(): _spine.set_visible(False)
+
+    plt.tight_layout()
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Pick a curve from the gallery
+
+    From here on we follow one running example through the pipeline, then
+    come back at the end and apply everything to the rest of the gallery.
+    Switch curves to see how the model behaves on each.
     """)
     return
 
@@ -140,52 +278,20 @@ def _(gallery, mo):
 
 
 @app.cell
-def _(curve_picker, gallery, plt):
+def _(curve_picker, gallery):
     name = curve_picker.value
-    curve_img = gallery[f"{name}/curve_img"]
+    curve_xy = gallery[f"{name}/curve_xy"]
     samples = gallery[f"{name}/samples"]
+    return curve_xy, name, samples
 
+
+@app.cell
+def _(curve_xy, make_axes, name, plot_curve, plt):
     _fig, _ax = plt.subplots(figsize=(5, 5))
-    _ax.imshow(curve_img, cmap="binary", vmin=0, vmax=255)
-    _ax.set_title(f"input: {name}  ({curve_img.shape[0]}×{curve_img.shape[1]} binary)")
-    _ax.axis("off")
+    plot_curve(_ax, curve_xy)
+    make_axes(_ax, title=f"input: {name}")
     plt.tight_layout()
     _fig
-    return curve_img, samples
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### How is the curve made?
-
-    The training distribution is procedurally generated. Each curve is the
-    graph of a radial function
-
-    $$
-    r(\theta) = 1 + \sum_{h=1}^{H} \rho_h \sin(h\theta + \phi_h) + \delta(\theta)
-    $$
-
-    where the harmonics $\rho_h$ decay logarithmically and $\delta$ is a
-    **periodic cubic spline correction** chosen to make the curve pass
-    exactly through four predetermined square corners. So each training
-    example *guarantees an inscribed square by construction* — the model
-    never has to wonder whether a solution exists.
-
-    At test time on real curves the construction trick is gone, but the
-    model has learned how a curve "wants" a square: it produces one anyway.
-
-    <details>
-    <summary>The data trick is doing some heavy lifting here.</summary>
-
-    Hardcoding a square into every training curve means the model has only
-    ever seen Jordan curves that *do* contain a square (a known unknown for
-    non-rectifiable curves). If your test curve is wildly out of
-    distribution — heavily self-intersecting after smoothing, fractal-like,
-    very thin lobes — the model can fail gracefully or silently. The
-    spiky-gear example below pushes that envelope.
-    </details>
-    """)
     return
 
 
@@ -195,9 +301,9 @@ def _(mo):
     ## Watch the square emerge
 
     DDIM walks 100 denoising steps from pure Gaussian noise to a clean
-    prediction. The pictures below are the **predicted clean image
-    $\hat x_0$** at every 10th step — they show what the model "thinks"
-    the answer is at every point in the trajectory.
+    prediction. Below: the **predicted clean image $\hat x_0$** at every
+    10th step — what the model "thinks" the answer is at every point in
+    the trajectory.
     """)
     return
 
@@ -209,27 +315,26 @@ def _(curve_picker, gallery, mo):
         traj = gallery[f"{curve_picker.value}/trajectory"]
         step_slider = mo.ui.slider(
             start=0, stop=traj.shape[0] - 1, value=traj.shape[0] - 1,
-            step=1, label="denoising step",
+            step=1, label="trajectory step",
         )
     else:
         traj = None
-        step_slider = mo.md("*(trajectory only cached for the hero butterfly curve — switch to it to use this slider)*")
+        step_slider = mo.md("*(trajectory only cached for the hero butterfly — switch to it to use this slider)*")
     step_slider
     return has_traj, step_slider, traj
 
 
 @app.cell
-def _(curve_img, has_traj, plt, step_slider, traj):
+def _(curve_xy, has_traj, make_axes, plot_curve, plt, step_slider, traj):
     if has_traj:
         _s = int(step_slider.value)
         _frame = traj[_s, 0]
         if _frame.ndim == 3:
             _frame = _frame[0]
-        _fig, _ax = plt.subplots(figsize=(5, 5))
-        _ax.imshow(curve_img, cmap="gray_r", alpha=0.35)
-        _ax.imshow(_frame, cmap="RdBu_r", vmin=-1, vmax=1, alpha=0.85)
-        _ax.set_title(f"$\\hat x_0$ at trajectory step {_s} of {traj.shape[0]-1}")
-        _ax.axis("off")
+        _fig, _ax = plt.subplots(figsize=(5.4, 5.4))
+        _ax.imshow(_frame, cmap="RdBu_r", vmin=-1, vmax=1)
+        plot_curve(_ax, curve_xy, color="black", lw=1.0, alpha=0.45)
+        make_axes(_ax, title=f"$\\hat x_0$ at step {_s} of {traj.shape[0]-1}  (red = square, blue = background)")
         plt.tight_layout()
         _out = _fig
     else:
@@ -244,8 +349,7 @@ def _(mo):
     ## One solution at a time
 
     Each random seed produces a different valid inscribed square.
-    Use the slider to scroll through the seeds the model produced
-    for the curve above.
+    Scroll the slider to walk through the seeds.
     """)
     return
 
@@ -260,16 +364,47 @@ def _(mo, samples):
 
 
 @app.cell
-def _(curve_img, np, plt, sample_slider, samples):
+def _(
+    curve_xy,
+    make_axes,
+    plot_curve,
+    plot_square_outline,
+    plt,
+    sample_slider,
+    samples,
+):
     _i = int(sample_slider.value)
-    _sq = samples[_i]
-    _sq01 = np.clip((_sq + 1) / 2, 0, 1)
-
     _fig, _ax = plt.subplots(figsize=(5.5, 5.5))
-    _ax.imshow(curve_img, cmap="gray_r", alpha=0.6)
-    _ax.imshow(1 - _sq01, cmap="Reds", alpha=0.7)
-    _ax.set_title(f"seed {_i} → one valid inscribed square")
-    _ax.axis("off")
+    plot_curve(_ax, curve_xy)
+    plot_square_outline(_ax, samples[_i])
+    make_axes(_ax, title=f"seed {_i} → one valid inscribed square")
+    plt.tight_layout()
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Four seeds, four squares
+
+    Same curve, different random initial noise, different valid squares.
+    These are not retries — they are simultaneous *modes* of the
+    diffusion posterior $p(\text{square} \mid \text{curve})$.
+    """)
+    return
+
+
+@app.cell
+def _(curve_xy, make_axes, np, plot_curve, plot_square_outline, plt, samples):
+    _idxs = np.linspace(0, samples.shape[0] - 1, 4).astype(int)
+    _colors = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd"]
+
+    _fig, _axes = plt.subplots(1, 4, figsize=(14, 4))
+    for _ax, _i, _c in zip(_axes, _idxs, _colors):
+        plot_curve(_ax, curve_xy)
+        plot_square_outline(_ax, samples[int(_i)], color=_c, fill_alpha=0.20)
+        make_axes(_ax, title=f"seed {int(_i)}")
     plt.tight_layout()
     _fig
     return
@@ -280,35 +415,31 @@ def _(mo):
     mo.md(r"""
     ## The hero cell — the family of solutions
 
-    Here is the part the original paper hints at but doesn't quantify.
-    A smooth Jordan curve generally admits a *continuous family* of
-    inscribed squares. Diffusion models, being multimodal samplers, can
-    sweep through that family one seed at a time.
+    Now overlay *every* sampled square onto the same curve, weighted by
+    how many seeds covered each pixel. Bright pixels are inside the
+    intersection of all sampled squares; dim pixels are reached by only
+    some. The contrast is the **wiggle room of the inscribed-square
+    family** for this Jordan curve — something the paper hints at but
+    never quantifies.
 
-    Below: every seed's predicted square overlaid on a single curve as
-    a heat map. Bright pixels are covered by *every* sampled square;
-    dim pixels by only some seeds. The contrast is the "wiggle room"
-    of the inscribed-square family on this Jordan curve.
+    You're seeing one slice of an infinite-dimensional solution manifold,
+    free of charge, just because the model is multimodal.
     """)
     return
 
 
 @app.cell
-def _(curve_img, np, plt, samples):
+def _(curve_xy, make_axes, np, plot_curve, plt, samples):
     _n = samples.shape[0]
-    _fig, _ax = plt.subplots(figsize=(6, 6))
-    _ax.imshow(curve_img, cmap="gray_r", alpha=0.55)
-
+    _fig, _ax = plt.subplots(figsize=(6.2, 6.2))
     _mask = (samples < 0).astype(np.float32)
     _heat = _mask.mean(axis=0)
-    _im = _ax.imshow(
-        np.where(_heat > 0.05, _heat, np.nan),
-        cmap="plasma", alpha=0.85, vmin=0, vmax=1,
-    )
+    _im = _ax.imshow(np.where(_heat > 0.05, _heat, np.nan),
+                     cmap="plasma", alpha=0.92, vmin=0, vmax=1)
+    plot_curve(_ax, curve_xy, color="black", lw=1.6, alpha=0.85)
     _cbar = plt.colorbar(_im, ax=_ax, fraction=0.046, pad=0.04)
     _cbar.set_label(f"fraction of {_n} seeds covering pixel")
-    _ax.set_title("Multimodal solution map: where the squares live")
-    _ax.axis("off")
+    make_axes(_ax, title="multimodal solution map")
     plt.tight_layout()
     _fig
     return
@@ -317,26 +448,15 @@ def _(curve_img, np, plt, samples):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    The shape of the bright core is the **intersection of all inscribed
-    squares** for this curve; the dim halo is their union. This is
-    something the paper's qualitative figures do not show. It's a free
-    byproduct of using a diffusion model — there is no extra inference
-    cost for getting it.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
     ### Are these actually squares?
 
-    We can score each sample's "squareness" — the fraction of the
-    predicted shape filled by the smallest enclosing rectangle, scaled
-    by an aspect-ratio penalty (the metric the paper uses):
+    We can score each sample's "squareness" — fraction of the predicted
+    shape filled by the smallest enclosing rectangle, scaled by an
+    aspect-ratio penalty (the metric the paper uses):
 
     $$
-    Q = \frac{\text{area}}{w \cdot h} \cdot \exp\!\left(-2 \left|\tfrac{\max(w,h)}{\min(w,h)} - 1\right|\right)
+    Q = \frac{\text{area}}{w \cdot h} \cdot
+    \exp\!\left(-2 \left|\tfrac{\max(w,h)}{\min(w,h)} - 1\right|\right)
     $$
 
     $Q = 1$ is a perfect square; $Q$ near 0 is a long thin rectangle or
@@ -364,15 +484,17 @@ def _(np, plt, samples):
 
     _fig, (_a1, _a2) = plt.subplots(1, 2, figsize=(11, 3.5))
     _a1.bar(range(len(scores)), scores, color="#5b8def")
-    _a1.axhline(0.85, ls="--", color="grey", alpha=0.5,
+    _a1.axhline(0.85, ls="--", color="grey", alpha=0.6,
                 label="paper's quality threshold ≈ 0.85")
     _a1.set_xlabel("seed index"); _a1.set_ylabel("squareness $Q$")
     _a1.set_ylim(0, 1.02); _a1.legend(fontsize=8)
     _a1.set_title("per-seed squareness")
+    for _spine in ("top", "right"): _a1.spines[_spine].set_visible(False)
 
-    _a2.scatter(_areas, scores, s=40, c="#5b8def")
+    _a2.scatter(_areas, scores, s=44, c="#5b8def", edgecolor="white", linewidth=0.5)
     _a2.set_xlabel("predicted square area (px)"); _a2.set_ylabel("squareness $Q$")
     _a2.set_title("size vs. quality")
+    for _spine in ("top", "right"): _a2.spines[_spine].set_visible(False)
     plt.tight_layout()
     _fig
     return (scores,)
@@ -382,7 +504,7 @@ def _(np, plt, samples):
 def _(mo, scores):
     mo.md(
         f"""
-        Mean squareness across seeds: **{float(scores.mean()):.3f}** (n={len(scores)}).
+        Mean squareness across seeds: **{float(scores.mean()):.3f}**, n={len(scores)}.
         Outliers near 0 are typically failed samples — the model occasionally
         produces a degenerate blob instead of a square. Failure rates of
         ~5–15% match the paper's reported numbers on the curves task.
@@ -394,17 +516,23 @@ def _(mo, scores):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Gallery
+    ## Gallery — every curve in the test set
 
-    The same model, the same pipeline, applied to every curve in our test
-    set. For each curve we show the multimodal map (intersection of all
-    sampled squares).
+    Same model, same pipeline, applied to all five curves. Each panel
+    shows the multimodal heatmap (intersection in yellow, halo in purple).
+
+    - **circle** — every diameter rotation gives an inscribed square, and
+      you can literally see the model rediscovering that: the heatmap is
+      a near-perfect rotational sunflower.
+    - **peanut** — only one square fits; the heatmap is a single tight blob.
+    - **spiky_gear** — the model finds a robust square despite the
+      out-of-distribution lobes.
     """)
     return
 
 
 @app.cell
-def _(gallery, np, plt):
+def _(gallery, make_axes, np, plot_curve, plt):
     _names = [
         n for n in
         ["hero_butterfly", "circle", "peanut", "spiky_gear", "paper_figure_1"]
@@ -412,20 +540,19 @@ def _(gallery, np, plt):
     ]
     _rows = (len(_names) + 1) // 2
 
-    _fig, _axes = plt.subplots(_rows, 2, figsize=(11, 5 * _rows))
+    _fig, _axes = plt.subplots(_rows, 2, figsize=(11, 5.2 * _rows))
     _axes = np.atleast_2d(_axes)
 
     for _k, _name in enumerate(_names):
         _r, _c = divmod(_k, 2)
         _ax = _axes[_r, _c]
-        _cimg = gallery[f"{_name}/curve_img"]
         _smp = gallery[f"{_name}/samples"]
+        _cxy = gallery[f"{_name}/curve_xy"]
         _heat = (_smp < 0).astype(np.float32).mean(axis=0)
-        _ax.imshow(_cimg, cmap="gray_r", alpha=0.55)
         _ax.imshow(np.where(_heat > 0.05, _heat, np.nan),
-                   cmap="plasma", vmin=0, vmax=1, alpha=0.85)
-        _ax.set_title(f"{_name}  (n={_smp.shape[0]} seeds)")
-        _ax.axis("off")
+                   cmap="plasma", vmin=0, vmax=1, alpha=0.92)
+        plot_curve(_ax, _cxy, color="black", lw=1.4, alpha=0.85)
+        make_axes(_ax, title=f"{_name}  (n={_smp.shape[0]} seeds)")
 
     for _k in range(len(_names), _rows * 2):
         _r, _c = divmod(_k, 2)
@@ -440,23 +567,22 @@ def _(mo):
     mo.md(r"""
     ## What this notebook does *not* claim
 
-    - **The model is not a proof.** It outputs pixel pictures. Its squares
+    - **The model is not a proof.** It outputs pixel pictures. The squares
       are visually inscribed, but corners snap to the nearest curve pixel
       to within ~1 pixel of error — not provably exact.
-    - **Out-of-distribution failure is real.** Curves with very thin lobes,
-      aggressive self-intersections after smoothing, or fractal-like
-      textures often produce degenerate samples. We don't filter them out
-      in the multimodal map.
-    - **The training "trick" matters.** Each training curve was constructed
-      to pass through a known square. The model never had to discover
-      inscribed-ness from scratch on adversarial inputs.
+    - **Out-of-distribution failure is real.** Curves with thin lobes,
+      aggressive self-intersections, or fractal textures often produce
+      degenerate samples. The multimodal map does not filter them.
+    - **The training data trick matters.** Each training curve was
+      constructed to pass through a known square. The model never had to
+      discover inscribed-ness from scratch on adversarial inputs.
 
     None of this diminishes the central observation: a generic image
-    diffusion model — no architectural specialization, no parametric output
-    head — recovers inscribed squares from images at high enough quality
-    to be visually convincing on novel curves. That's the paper's
-    contribution. The multimodal-overlay angle in this notebook is a free
-    side effect of the formulation.
+    diffusion model — no architectural specialization, no parametric
+    output head — recovers inscribed squares from images well enough to
+    be visually convincing on novel curves. That's the paper's
+    contribution. The multimodal-overlay framing in this notebook is a
+    free side effect of using diffusion.
     """)
     return
 
@@ -466,10 +592,10 @@ def _(mo):
     mo.md(r"""
     ## Try it yourself
 
-    - **Source repo**: `github.com/FarseenSh/alphaxiv-marimo-comp` — fork to run sampling on
-      your own curves. The script `scripts/precompute.py` accepts any
-      `(H, ρ, target_radius, rotation, seed)` tuple.
-    - **Pretrained checkpoint**: 80MB, available at
+    - **Repo**: [`github.com/FarseenSh/alphaxiv-marimo-comp`](https://github.com/FarseenSh/alphaxiv-marimo-comp)
+      — fork to run sampling on your own curves. `scripts/precompute.py`
+      accepts any `(H, ρ, target_radius, rotation, seed)` tuple.
+    - **Pretrained checkpoint**: 80 MB at
       [huggingface.co/nirgoren/geometric-solver](https://huggingface.co/nirgoren/geometric-solver).
     - **Original paper**: [arXiv:2510.21697](https://arxiv.org/abs/2510.21697)
       (Goren, Yehezkel, Dahary, Voynov, Patashnik, Cohen-Or — CVPR 2026 Highlight).
