@@ -496,15 +496,26 @@ def _(mo):
 @app.cell
 def _(np, plt, samples):
     def _squareness(mask):
+        """Squareness via min-area rotating bbox (PCA-free, brute-force over 1° angles)."""
         _ys, _xs = np.where(mask < 0)
         if len(_xs) < 8:
             return 0.0, 0.0
-        _x0, _x1 = _xs.min(), _xs.max()
-        _y0, _y1 = _ys.min(), _ys.max()
-        _w, _h = max(1, _x1 - _x0), max(1, _y1 - _y0)
+        _pts = np.stack([_xs, _ys], axis=1).astype(float)
+        _pts = _pts - _pts.mean(axis=0)
+        _best_a = np.inf
+        _best_w = _best_h = 0.0
+        for _ang in np.arange(0, 90, 1.0):
+            _r = np.radians(_ang)
+            _R = np.array([[np.cos(_r), -np.sin(_r)], [np.sin(_r), np.cos(_r)]])
+            _rot = _pts @ _R.T
+            _w = _rot[:, 0].max() - _rot[:, 0].min()
+            _h = _rot[:, 1].max() - _rot[:, 1].min()
+            if _w * _h < _best_a:
+                _best_a = _w * _h
+                _best_w, _best_h = _w, _h
         _area = float(len(_xs))
-        _fill = _area / (_w * _h)
-        _aspect = max(_w, _h) / min(_w, _h)
+        _fill = _area / max(1.0, _best_a)
+        _aspect = max(_best_w, _best_h) / max(1.0, min(_best_w, _best_h))
         return float(_fill * np.exp(-2 * abs(_aspect - 1))), _area
 
     scores = np.array([_squareness(s)[0] for s in samples])
