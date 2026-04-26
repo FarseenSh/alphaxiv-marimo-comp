@@ -26,15 +26,24 @@ def _():
     import io
     import logging
     import urllib.request
+    from contextlib import redirect_stderr, redirect_stdout
     from importlib.util import find_spec
     from pathlib import Path
 
-    # Suppress the "Matplotlib is building the font cache" INFO message that
-    # fires the first time matplotlib runs in a fresh Pyodide environment.
+    # Silence the "Matplotlib is building the font cache" first-run message
+    # that fires in fresh Pyodide environments. Belt and suspenders: lower
+    # the log levels (in case it routes through logging), AND redirect both
+    # std streams during the matplotlib import (in case it writes direct).
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
     import marimo as mo
-    import matplotlib.pyplot as plt
+    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+        import matplotlib.pyplot as plt
+        # Force font cache build now (while streams are silenced) so the
+        # first real plt.subplots() call doesn't trigger the message.
+        _warmup = plt.figure(figsize=(0.1, 0.1))
+        plt.close(_warmup)
     import numpy as np
     from scipy.interpolate import splev, splprep
     from skimage.measure import find_contours
