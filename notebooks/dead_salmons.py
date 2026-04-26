@@ -302,7 +302,7 @@ def _(mo):
 def _(METHOD_LABELS, METHOD_NAMES, mo):
     method_picker = mo.ui.dropdown(
         options={METHOD_LABELS[m]: m for m in METHOD_NAMES},
-        value=METHOD_NAMES[0],
+        value=METHOD_LABELS[METHOD_NAMES[0]],
         label="Attribution method",
     )
     method_picker
@@ -476,7 +476,7 @@ def _(mo):
 def _(METHOD_LABELS, METHOD_NAMES, mo):
     perm_method_picker = mo.ui.dropdown(
         options={METHOD_LABELS[m]: m for m in METHOD_NAMES},
-        value=METHOD_NAMES[0],
+        value=METHOD_LABELS[METHOD_NAMES[0]],
         label="Attribution method",
     )
     perm_method_picker
