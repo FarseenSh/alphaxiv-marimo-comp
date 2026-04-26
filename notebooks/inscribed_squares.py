@@ -24,9 +24,14 @@ app = marimo.App(width="full")
 @app.cell(hide_code=True)
 def _():
     import io
+    import logging
     import urllib.request
     from importlib.util import find_spec
     from pathlib import Path
+
+    # Suppress the "Matplotlib is building the font cache" INFO message that
+    # fires the first time matplotlib runs in a fresh Pyodide environment.
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
     import marimo as mo
     import matplotlib.pyplot as plt
